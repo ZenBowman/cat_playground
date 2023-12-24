@@ -12,6 +12,7 @@
 #include <opencv2/imgproc.hpp>
 #include <opencv2/objdetect.hpp>
 #include <opencv2/videoio.hpp>
+#include <thread>
 
 static bool app_quit = false;
 const char *image_path = "gingertail_runwalk.bmp";
@@ -152,7 +153,6 @@ ReadFrameResult read_frame(VideoCapture &camera, Mat &mutable_frame) {
   cv::cvtColor(mutable_frame, frame_gray, cv::COLOR_BGR2GRAY);
 
   cv::circle(mutable_frame, max_center_of_mass, 20, color, 10);
-  std::cout << "Drawing frame\n";
   imshow("", mutable_frame);
   // imshow("Gray", frame_gray);
 
@@ -196,10 +196,21 @@ void main_loop() {
   while (1) {
     ReadFrameResult frameinput = read_frame(cap, frame);
     cv::waitKey(2);
+    std::this_thread::yield();
   }
 }
 
+void input_thread() {
+    std::cout<< "Launching input thread";
+    while (1) {
+        std::this_thread::sleep_for (std::chrono::seconds(1));
+        std::cout<<"thread id" << std::endl;
+    }
+}
+
 int main(int argc, char *argv[]) {
-  main_loop();
+    std::thread input_loop(input_thread);
+    main_loop();
+    input_loop.join();
   return 0;
 }
