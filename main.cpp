@@ -7,6 +7,7 @@
 #endif
 #include <SDL3_ttf/SDL_ttf.h>
 #include <SDL_main.h>
+#include <mutex>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -14,6 +15,7 @@
 #include <opencv2/videoio.hpp>
 #include <thread>
 
+std::mutex quit_mutex;
 static bool app_quit = false;
 const char *image_path = "gingertail_runwalk.bmp";
 
@@ -183,6 +185,15 @@ int clamp(int value, int low, int high) {
   return value;
 }
 
+bool should_quit() {
+  bool should_quit;
+  {
+    std::lock_guard<std::mutex> guard(quit_mutex);
+    should_quit = app_quit;
+  }
+  return should_quit;
+}
+
 void main_loop() {
   Mat frame;
   // Initialize camera
@@ -193,7 +204,7 @@ void main_loop() {
     return;
   }
 
-  while (1) {
+  while (!should_quit()) {
     ReadFrameResult frameinput = read_frame(cap, frame);
     cv::waitKey(2);
     std::this_thread::yield();
@@ -201,16 +212,22 @@ void main_loop() {
 }
 
 void input_thread() {
-    std::cout<< "Launching input thread";
-    while (1) {
-        std::this_thread::sleep_for (std::chrono::seconds(1));
-        std::cout<<"thread id" << std::endl;
+  while (1) {
+    std::string command;
+    std::cout << "playground> ";
+    std::cin >> command;
+
+    if (command == "exit") {
+      std::lock_guard<std::mutex> guard(quit_mutex);
+      app_quit = true;
+      break;
     }
+  }
 }
 
 int main(int argc, char *argv[]) {
-    std::thread input_loop(input_thread);
-    main_loop();
-    input_loop.join();
+  std::thread input_loop(input_thread);
+  main_loop();
+  input_loop.join();
   return 0;
 }
