@@ -41,62 +41,52 @@ const int winHeight = 1200;
 
 enum Action { NONE, MOVE_LEFT, MOVE_RIGHT };
 
-Mat draw_contours(Mat &src, int &maxAreaOut, Point &maxCenterOfMassOut,
-                  int minArea) {
-  Mat dst = Mat::zeros(src.rows, src.cols, CV_8UC3);
-  std::vector<std::vector<Point>> contours;
-  std::vector<Vec4i> hierarchy;
+// Represents the transformation of an image, taking in an input of type Mat,
+// and returning an output of type Mat. The idea is to string these
+// transformations together in a pipeline, to play around with different image
+// transforms and see them work to get some intuition of what is going on.
+class ImageTransform {
+public:
+  virtual Mat apply_transform(const Mat &src) = 0;
+};
 
-  findContours(src, contours, hierarchy, RETR_CCOMP, CHAIN_APPROX_SIMPLE);
+// Represents a series of transforms to be applied to an image matrix.
+class Pipeline {
+public:
+  // Apply the series of transforms represented by this pipeline
+  // to the source matrix.
+  Mat apply_pipeline(const Mat &src);
 
-  maxAreaOut = 0;
-  int maxAreaIndex = 0;
-  int currentArea;
-  std::vector<int> indicesToDraw;
-  std::vector<cv::Point> centerOfMasses;
+  // Adds a transform at the end of this pipeline.
+  // Does not take ownership of the ImageTransform object,
+  // which is expected to outlive the pipeline object to
+  // which it is added.
+  void add_transform(ImageTransform *transform);
 
-  for (int i = 0; i < contours.size(); i++) {
-    auto contour = contours[i];
-    currentArea = contourArea(contour);
+private:
+  // For now we'll just model this as a linear series of transforms,
+  // and we can consider changing this to DAG if needed.
+  std::vector<ImageTransform *> transforms;
+};
 
-    if (currentArea > minArea) {
-      indicesToDraw.push_back(i);
-      cv::Point point;
-      auto m = moments(contour);
-      point.x = m.m10 / m.m00;
-      point.y = m.m01 / m.m00;
-      centerOfMasses.push_back(point);
-    }
+void Pipeline::add_transform(ImageTransform *transform) {
+  transforms.push_back(transform);
+}
 
-    if (currentArea > maxAreaOut) {
-      // SDL_Log("Area found: %i", currentArea);
-      maxAreaOut = currentArea;
-      maxAreaIndex = i;
-    }
+Mat Pipeline::apply_pipeline(const Mat &src) {
+  if (transforms.size() == 0) {
+    Mat transformed_matrix = src;
+    return transformed_matrix;
   }
-
-  if (centerOfMasses.size() == 0) {
-    maxCenterOfMassOut.x = 0;
-    maxCenterOfMassOut.y = 0;
-  } else {
-    maxCenterOfMassOut.x = 0;
-    maxCenterOfMassOut.y = 0;
+  Mat transformed_matrix = transforms[0]->apply_transform(src);
+  for (int i = 1; i < transforms.size(); i++) {
+    transformed_matrix = transforms[i]->apply_transform(transformed_matrix);
   }
-  for (auto point : centerOfMasses) {
-    maxCenterOfMassOut.x += point.x / centerOfMasses.size();
-    maxCenterOfMassOut.y += point.y / centerOfMasses.size();
-  }
-
-  Scalar color = Scalar(255, 0, 0);
-  for (auto i : indicesToDraw) {
-    drawContours(dst, contours, i, color, 2, 8, hierarchy, 0, Point());
-  }
-
-  return dst;
+  return transformed_matrix;
 }
 
 // Select green pixels from the camera frame.
-Mat apply_green_filter(Mat &source, int min_green) {
+Mat apply_green_filter(const Mat &source, int min_green) {
   Mat hsvSource;
   cv::cvtColor(source, hsvSource, cv::COLOR_BGR2HSV);
   Mat newMatrix = Mat::zeros(source.rows, source.cols, CV_8UC1);
@@ -134,46 +124,28 @@ Mat apply_green_filter(Mat &source, int min_green) {
   return newMatrix;
 }
 
+class GreenTransform : public ImageTransform {
+public:
+  Mat apply_transform(const Mat &src) override {
+    return apply_green_filter(src, 100);
+  }
+};
+
 struct ReadFrameResult {
   Action action;
   cv::Point center_of_mass;
 };
 
-// Reads the current camera frame, loads it into mutable_frame,
-// and displays the camera frame in a separate window.
-ReadFrameResult read_frame(VideoCapture &camera, Mat &mutable_frame) {
+// Reads the current camera frame, and applies the transforms
+// specified by the pipeline to it.
+void read_frame(VideoCapture &camera, Pipeline &pipeline) {
+  Mat mutable_frame;
   camera.read(mutable_frame);
-  Mat green_filter = apply_green_filter(mutable_frame, /*min_green=*/100);
-  int max_area;
-  Point max_center_of_mass;
-  Mat contours =
-      draw_contours(green_filter, max_area, max_center_of_mass, 10000);
+  Mat transformed = pipeline.apply_pipeline(mutable_frame);
 
-  Scalar color = Scalar(255, 0, 0); // Color for Drawing tool
-
-  Mat frame_gray;
-  cv::cvtColor(mutable_frame, frame_gray, cv::COLOR_BGR2GRAY);
-
-  cv::circle(mutable_frame, max_center_of_mass, 20, color, 10);
-  imshow("", mutable_frame);
-  // imshow("Gray", frame_gray);
-
-  ReadFrameResult res;
-  res.center_of_mass = max_center_of_mass;
-
-  if (max_center_of_mass.x == 0) {
-    res.action = NONE;
-    return res;
-  }
-
-  if (max_center_of_mass.x < 1000) {
-    res.action = MOVE_RIGHT;
-  } else if (max_center_of_mass.x > 1200) {
-    res.action = MOVE_LEFT;
-  } else {
-    res.action = NONE;
-  }
-  return res;
+  imshow("Original", mutable_frame);
+  imshow("Gray", transformed);
+  cv::moveWindow("Gray", 500, 0);
 }
 
 int clamp(int value, int low, int high) {
@@ -204,8 +176,12 @@ void main_loop() {
     return;
   }
 
+  GreenTransform greenTransform;
+  Pipeline pipeline;
+  pipeline.add_transform(&greenTransform);
+
   while (!should_quit()) {
-    ReadFrameResult frameinput = read_frame(cap, frame);
+    read_frame(cap, pipeline);
     cv::waitKey(2);
     std::this_thread::yield();
   }
